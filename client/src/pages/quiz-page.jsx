@@ -49,6 +49,23 @@ export default function QuizPage() {
         return () => clearInterval(pollingInterval);
     }, [id]);
 
+    // Add this effect to create a test attempt if it doesn't exist
+    useEffect(() => {
+        const ensureTestAttempt = async () => {
+            try {
+                // Try to fetch the test attempt for this quiz and user
+                const resp = await axiosInstance.get(`/test-attempts/by-quiz/${id}`);
+                if (!resp.data.testAttempt) {
+                    // If not found, create a new test attempt
+                    await axiosInstance.post(`/test-attempts/${id}/start`);
+                }
+            } catch (e) {
+                // Ignore if already exists or not needed
+            }
+        };
+        ensureTestAttempt();
+    }, [id]);
+
     const handleAnswerClick = (qIdx, optionIdx) => {
         if (mode !== "Workout") return;
         setSelectedAnswers((prev) => ({ ...prev, [qIdx]: optionIdx }));

@@ -1,10 +1,6 @@
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HarmBlockThreshold, HarmCategory } from "@google/generative-ai";
 import { GoogleAIFileManager } from "@google/generative-ai/server";
-import { AgentExecutor, createReactAgent } from "langchain/agents";
-import { DynamicTool } from "@langchain/core/tools";
-import { pull } from "langchain/hub";
-
 import { decrypt } from "../controllers/userProfile.js";
 
 // Function to get a Generative AI model instance with a specific API key
@@ -40,8 +36,8 @@ export const getFileManager = (apiKey) => {
   return fileManagerInstance;
 };
 
-// Placeholder for feedback agent
-export const getFeedbackAgent = async (
+// Feedback generation: plain LLM call, no tools/agents
+export const getFeedbackAgent = (
   apiKey,
   quizQuestions,
   userAnswers,
@@ -51,61 +47,9 @@ export const getFeedbackAgent = async (
 ) => {
   const model = getGenerativeModel(apiKey);
 
-  // Fix: Some versions of langchain expect .name to be an own property (not just a getter on the prototype).
-  // We'll set .name as an own property and ensure no undefined tools.
-  function ensureOwnName(tool) {
-    // Defensive: skip undefined/null
-    if (!tool) return null;
-    // Defensive: skip if .name is missing or not a string
-    const name = tool.name;
-    if (!name || typeof name !== "string") return null;
-    // If already an own property, return as is
-    if (Object.prototype.hasOwnProperty.call(tool, "name")) return tool;
-    // Copy all properties and explicitly set .name as own property
-    const wrapped = Object.create(Object.getPrototypeOf(tool));
-    Object.assign(wrapped, tool);
-    wrapped.name = name;
-    return wrapped;
-  }
-
-  const tools = [
-    new DynamicTool({
-      name: "get_original_content_summary",
-      description: "Call this to get the summary of the original content used for quiz generation.",
-      func: async (input) => {
-        return originalContentSummary;
-      },
-    }),
-    new DynamicTool({
-      name: "get_quiz_questions",
-      description: "Call this to get the details of the quiz questions.",
-      func: async (input) => {
-        return JSON.stringify(quizQuestions);
-      },
-    }),
-    new DynamicTool({
-      name: "get_user_answers",
-      description: "Call this to get the user's submitted answers.",
-      func: async (input) => {
-        return JSON.stringify(userAnswers);
-      },
-    }),
-    new DynamicTool({
-      name: "get_correct_answers",
-      description: "Call this to get the correct answers for the quiz questions.",
-      func: async (input) => {
-        return JSON.stringify(correctAnswers);
-      },
-    }),
-  ]
-    .map(ensureOwnName)
-    .filter(Boolean); // Remove any null/undefined tools
-
-  // Enhanced prompt for structured, interactive, and graphical feedback
+  // Compose a single prompt with all context
   const prompt = `
-You are an expert educational feedback AI. Your task is to provide a highly structured, interactive, and visually engaging feedback report on a user's quiz attempt. Use the provided tools to access quiz questions, user answers, correct answers, and the original content summary.
-
-Your output must be a single valid JSON object (no markdown, no code blocks, no commentary) with the following structure:
+You are an expert educational feedback AI. Given the following quiz attempt data, generate a highly structured, interactive, and visually engaging feedback report. Output a single valid JSON object (no markdown, no code blocks, no commentary) with the following structure:
 
 {
   "overallFeedback": "[A concise, positive summary of the user's performance, referencing key strengths and areas for improvement.]",
@@ -137,17 +81,20 @@ Your output must be a single valid JSON object (no markdown, no code blocks, no 
 }
 
 DO NOT include any markdown, code blocks, or extra commentary. Output ONLY the JSON object.
+
+Quiz Questions: ${JSON.stringify(quizQuestions, null, 2)}
+User Answers: ${JSON.stringify(userAnswers, null, 2)}
+Correct Answers: ${JSON.stringify(correctAnswers, null, 2)}
+Score: ${score}
+Original Content Summary: ${originalContentSummary}
 `;
 
-  const agent = await createReactAgent({
-    llm: model,
-    tools,
-    prompt,
-  });
-
-  return AgentExecutor.fromAgentAndTools({
-    agent,
-    tools,
-    verbose: true,
-  });
+  // Return an object with an invoke method for compatibility
+  return {
+    invoke: async () => {
+      const response = await model.invoke(prompt);
+      // For compatibility with previous agent interface
+      return { output: response.content };
+    }
+  };
 };

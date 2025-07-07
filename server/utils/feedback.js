@@ -50,30 +50,30 @@ export const generateFeedback = async (
             originalContentSummary: safeContentSummary,
         };
 
-        // Pass context to the feedback agent
-        const feedbackAgent = await getFeedbackAgent(
+        // Call the plain LLM feedback agent (no tools/agent logic)
+        const feedbackAgent = getFeedbackAgent(
             apiKey,
             context.quizAttemptDetails,
+            userAnswers,
+            quizQuestions.map(q => q.correctOption),
             context.score,
             context.originalContentSummary
         );
 
         console.log("Feedback context sent to agent:", context);
 
-        const agentResponse = await feedbackAgent.invoke({
-            messages: [
-                {
-                    role: "user",
-                    content: "Generate feedback for this quiz attempt. Use the get_quiz_context tool to access all quiz data."
-                }
-            ]
-        });
+        const agentResponse = await feedbackAgent.invoke();
 
         console.log("Raw agent output:", agentResponse.output);
 
         let parsed;
         try {
-            parsed = JSON.parse(agentResponse.output);
+            // If the output is wrapped in a code block, extract the JSON only
+            let output = agentResponse.output;
+            if (typeof output === "string" && output.trim().startsWith("```json")) {
+                output = output.replace(/^```json/, "").replace(/```$/, "").trim();
+            }
+            parsed = JSON.parse(output);
         } catch (e) {
             console.error("AI feedback output not valid JSON:", agentResponse.output);
             return {
@@ -90,7 +90,7 @@ export const generateFeedback = async (
             quizQuestionsLength: quizQuestions?.length,
             userAnswersLength: userAnswers?.length,
             overallScore,
-            originalContentSummaryType: typeof originalContentSummary,
+            originalContentSummaryType: typeof originalContentSummary
         });
         return {
             overallFeedback: "Failed to generate detailed feedback.",

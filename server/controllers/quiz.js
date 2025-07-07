@@ -406,7 +406,18 @@ export const createQuiz = async (req, res) => {
 export const getQuizFeedback = async (req, res) => {
     try {
         const quizId = req.params.id;
-        const userId = req.user?.userId;
+        let userId = req.user && req.user.userId ? req.user.userId : null;
+
+        // Try to get userId from testAttempt if not present in req.user
+        let testAttempt = null;
+        if (!userId && req.query.testAttemptId) {
+            testAttempt = await prisma.testAttempt.findUnique({
+                where: { id: req.query.testAttemptId },
+            });
+            if (testAttempt && testAttempt.userId) {
+                userId = testAttempt.userId;
+            }
+        }
 
         // Fetch quiz and its questions
         const quiz = await prisma.quiz.findUnique({
@@ -417,32 +428,93 @@ export const getQuizFeedback = async (req, res) => {
             return res.status(404).json({ error: "Quiz not found" });
         }
 
-        // Fetch user's API key (must be valid)
-        const userAPIKey = await prisma.userAPIKey.findUnique({
-            where: { userId },
-        });
-        if (!userAPIKey || !userAPIKey.isValid) {
+        // --- Fetch full content context if available ---
+        let fullContent = "";
+        try {
+            const quizDir = path.join(process.cwd(), "uploads/files", quiz.id);
+            const files = await fs.readdir(quizDir);
+            // Concatenate all .txt files for full context
+            const txtFiles = files.filter(f => f.endsWith(".txt"));
+            if (txtFiles.length > 0) {
+                const contents = await Promise.all(
+                    txtFiles.map(f => fs.readFile(path.join(quizDir, f), "utf8"))
+                );
+                fullContent = contents.join("\n\n");
+            }
+        } catch (e) {
+            fullContent = quiz.originalContentSummary || "";
+        }
+
+        // --- DEBUG: Log userId and userAPIKey ---
+        console.log("getQuizFeedback: userId used:", userId);
+
+        // Defensive: Only fetch userAPIKey if userId is present
+        let userAPIKey = null;
+        if (userId) {
+            const user = await prisma.user.findUnique({
+                where: { id: userId },
+                include: { userAPIKey: true },
+            });
+            console.log("getQuizFeedback: user from DB:", user);
+            if (user && user.userAPIKey && user.userAPIKey.isValid && user.userAPIKey.apiKey) {
+                userAPIKey = user.userAPIKey;
+            }
+        }
+        // --- DEBUG: Log userAPIKey ---
+        console.log("getQuizFeedback: userAPIKey used:", userAPIKey);
+
+        if (!userAPIKey || !userAPIKey.isValid || !userAPIKey.apiKey) {
             return res.status(403).json({ error: "Valid Google API key is required to generate feedback." });
         }
 
-        // For feedback, simulate "empty" answers (or you can fetch last attempt, or allow params)
-        const quizQuestions = quiz.quizQuestions;
-        const userAnswers = quizQuestions.map(q => ({
-            quizQuestionId: q.id,
-            selectedOptionIndex: null,
-            isCorrect: false,
-        }));
-        const correctAnswers = quizQuestions.map(q => q.correctOption);
-        const score = 0;
-        const originalContentSummary = quiz.originalContentSummary || "";
+        // --- Use actual user answers if testAttemptId is provided ---
+        let userAnswers;
+        if (req.query.testAttemptId) {
+            if (!testAttempt) {
+                testAttempt = await prisma.testAttempt.findUnique({
+                    where: { id: req.query.testAttemptId },
+                });
+            }
+            if (testAttempt && testAttempt.userAnswers) {
+                userAnswers = testAttempt.userAnswers.map(ua => ({
+                    quizQuestionId: ua.quizQuestionId,
+                    selectedOptionIndex: ua.selectedOptionIndex,
+                    isCorrect: ua.isCorrect,
+                }));
+            }
+        }
+        // Fallback: simulate empty answers if not found
+        if (!userAnswers) {
+            userAnswers = quiz.quizQuestions.map(q => ({
+                quizQuestionId: q.id,
+                selectedOptionIndex: null,
+                isCorrect: false,
+            }));
+        }
 
+        const quizQuestions = quiz.quizQuestions;
+        const correctAnswers = quizQuestions.map(q => q.correctOption);
+
+        // Calculate score if userAnswers are present
+        let score = 0;
+        if (userAnswers && userAnswers.length > 0) {
+            let correct = 0;
+            for (let i = 0; i < quizQuestions.length; i++) {
+                const ua = userAnswers.find(ans => ans.quizQuestionId === quizQuestions[i].id);
+                if (ua && ua.selectedOptionIndex === quizQuestions[i].correctOption) {
+                    correct++;
+                }
+            }
+            score = quizQuestions.length > 0 ? Math.round((correct / quizQuestions.length) * 100) : 0;
+        }
+
+        // Use fullContent as the context for feedback
         const feedback = await generateFeedback(
             userAPIKey.apiKey,
             quizQuestions,
             userAnswers,
-            correctAnswers,
             score,
-            originalContentSummary
+            fullContent // <-- send full content, not just summary
         );
         res.json({ feedback });
     } catch (err) {
@@ -450,3 +522,71 @@ export const getQuizFeedback = async (req, res) => {
         res.status(500).json({ error: "Failed to generate feedback" });
     }
 };
+
+// Add this helper to generate and store feedback after quiz submission
+async function generateAndStoreFeedbackForTestAttempt(testAttemptId) {
+    // Fetch the test attempt, quiz, and user
+    const testAttempt = await prisma.testAttempt.findUnique({
+        where: { id: testAttemptId },
+        include: { quiz: { include: { quizQuestions: true } } }
+    });
+    if (!testAttempt || !testAttempt.quiz) return;
+
+    // Get user API key
+    const user = await prisma.user.findUnique({
+        where: { id: testAttempt.userId },
+        include: { userAPIKey: true }
+    });
+    if (!user || !user.userAPIKey || !user.userAPIKey.isValid || !user.userAPIKey.apiKey) return;
+
+    // Get full content context
+    let fullContent = "";
+    try {
+        const quizDir = path.join(process.cwd(), "uploads/files", testAttempt.quiz.id);
+        const files = await fs.readdir(quizDir);
+        const txtFiles = files.filter(f => f.endsWith(".txt"));
+        if (txtFiles.length > 0) {
+            const contents = await Promise.all(
+                txtFiles.map(f => fs.readFile(path.join(quizDir, f), "utf8"))
+            );
+            fullContent = contents.join("\n\n");
+        }
+    } catch (e) {
+        fullContent = testAttempt.quiz.originalContentSummary || "";
+    }
+
+    // Prepare userAnswers in the same format as getQuizFeedback
+    const userAnswers = testAttempt.userAnswers.map(ua => ({
+        quizQuestionId: ua.quizQuestionId,
+        selectedOptionIndex: ua.selectedOptionIndex,
+        isCorrect: ua.isCorrect,
+    }));
+
+    // Calculate score
+    const quizQuestions = testAttempt.quiz.quizQuestions;
+    let correct = 0;
+    for (let i = 0; i < quizQuestions.length; i++) {
+        const ua = userAnswers.find(ans => ans.quizQuestionId === quizQuestions[i].id);
+        if (ua && ua.selectedOptionIndex === quizQuestions[i].correctOption) {
+            correct++;
+        }
+    }
+    const score = quizQuestions.length > 0 ? Math.round((correct / quizQuestions.length) * 100) : 0;
+
+    // Generate feedback
+    const feedback = await generateFeedback(
+        user.userAPIKey.apiKey,
+        quizQuestions,
+        userAnswers,
+        score,
+        fullContent
+    );
+
+    // Store feedback in the testAttempt
+    await prisma.testAttempt.update({
+        where: { id: testAttemptId },
+        data: { feedback }
+    });
+}
+
+// In your test-attempts submit endpoint/controller (not shown in your prompt), after storing user answers and calculating score, call:
