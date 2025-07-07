@@ -6,7 +6,7 @@ export default function Landing() {
   const [activeIndex, setActiveIndex] = useState(0);
   const questions = [
     {
-      question: "What is the main purpose of Q-Space?",
+      question: "What is the main purpose of Re-Learn?",
       options: [
         "To create AI-driven quizzes",
         "To provide video conferencing services",
@@ -16,7 +16,7 @@ export default function Landing() {
       type: "Multiple Choice",
     },
     {
-      question: "How does Q-Space generate quizzes?",
+      question: "How does Re-Learn generate quizzes?",
       options: [
         "By analyzing text content",
         "By using human quiz makers",
@@ -26,7 +26,7 @@ export default function Landing() {
       type: "Multiple Choice",
     },
     {
-      question: "Why is Q-Space beneficial for educators?",
+      question: "Why is Re-Learn beneficial for educators?",
       options: [
         "Saves time",
         "Improves question quality",
@@ -45,10 +45,10 @@ export default function Landing() {
   }, [questions.length]);
 
   return (
-    <div className="flex w-full flex-col items-center justify-center bg-gradient-to-b from-[#F5F5F5] to-[#F0EEF6] px-4 py-12 font-sans">
+    <div className="flex w-full min-h-screen flex-col items-center justify-center bg-gradient-to-b from-[#F5F5F5] to-[#F0EEF6] px-4 py-12 font-sans">
       <div>
         <p className="pt-6 pb-2 text-4xl font-semibold">
-          <span className="italic">Q-</span>space
+          <span className="italic">Re-</span>Learn
         </p>
       </div>
 
@@ -96,21 +96,21 @@ export default function Landing() {
               <div className="flex items-center gap-2 p-1.5 rounded-md bg-gray-50 border border-gray-100">
                 <FileText className="h-3.5 w-3.5 text-purple-600" />
                 <div className="text-xs text-gray-700 truncate">
-                  lecture_notes.md
+                  relearn_intro.md
                 </div>
               </div>
 
               <div className="flex items-center gap-2 p-1.5 rounded-md bg-gray-50 border border-gray-100">
                 <FileText className="h-3.5 w-3.5 text-purple-600" />
                 <div className="text-xs text-gray-700 truncate">
-                  neural_networks.md
+                  relearn_concepts.md
                 </div>
               </div>
 
               <div className="flex items-center gap-2 p-1.5 rounded-md bg-gray-50 border border-gray-100">
                 <FileText className="h-3.5 w-3.5 text-purple-600" />
                 <div className="text-xs text-gray-700 truncate">
-                  deep_learning_intro.md
+                  relearn_advanced.md
                 </div>
               </div>
             </div>
@@ -176,7 +176,7 @@ export default function Landing() {
               </div>
             </div>
             <div className="text-lg leading-6 font-semibold text-purple-600">
-              Machine Learning Quiz
+              Re-Learn Introduction Quiz
             </div>
             <div className="text-[10px] font-medium text-gray-500">
               3 questions generated

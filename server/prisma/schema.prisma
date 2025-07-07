@@ -19,9 +19,27 @@ model User {
     createdAt     DateTime @default(now())
     updatedAt     DateTime @updatedAt
 
-    // Relationship to GoogleAuth for storing tokens
-    googleAuth GoogleAuth?
-    Quiz       Quiz[]
+    // New fields for user preferences
+    learningGoals String?
+    academicLevel String?
+    interests     String?
+
+    // Relationships
+    googleAuth  GoogleAuth?
+    userAPIKey  UserAPIKey?
+    quizzes     Quiz[]
+    testAttempts TestAttempt[]
+}
+
+model UserAPIKey {
+    id        String   @id @default(cuid())
+    userId    String   @unique
+    apiKey    String   @db.Text // Store the user's Google API key - MUST BE ENCRYPTED AT REST
+    isValid   Boolean  @default(false)
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model GoogleAuth {
@@ -42,18 +60,21 @@ model GoogleAuth {
 }
 
 model Quiz {
-    id         String     @id @default(cuid())
-    userId     String
-    config     Json
-    maxNos     Int
-    currentNos Int        @default(0)
-    status     QuizStatus @default(STARTING)
-    createdAt  DateTime   @default(now())
-    updatedAt  DateTime   @updatedAt
+    id                   String     @id @default(cuid())
+    userId               String
+    title                String? // New field for quiz title
+    config               Json
+    maxNos               Int
+    currentNos           Int        @default(0)
+    status               QuizStatus @default(STARTING)
+    originalContentSummary String? // New field for content summary
+    createdAt            DateTime   @default(now())
+    updatedAt            DateTime   @updatedAt
 
     user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
     quizQuestions QuizQuestion[]
+    testAttempts  TestAttempt[]
 }
 
 enum QuizStatus {
@@ -80,4 +101,21 @@ enum QuestionType {
     MULTIPLE_CHOICE
     TRUE_FALSE
     SHORT_ANSWER
+}
+
+model TestAttempt {
+    id                  String   @id @default(cuid())
+    userId              String
+    quizId              String
+    score               Float
+    correctAnswersCount Int
+    incorrectAnswersCount Int
+    userAnswers         Json // Store an array of objects: [{ quizQuestionId: "...", selectedOptionIndex: N }]
+    feedback            Json // Store AI-generated feedback (overall + per-question)
+    takenAt             DateTime @default(now())
+    createdAt           DateTime @default(now())
+    updatedAt           DateTime @updatedAt
+
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+    quiz Quiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
 }

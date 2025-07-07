@@ -1,173 +1,88 @@
 import prisma from "../prisma.js";
 import fs from "fs/promises";
-import { model, fileManager } from "../services/ai.js";
-import { YoutubeTranscript } from "youtube-transcript";
-import { generateAndStoreQuestions } from "../utils/quiz.js"; // Import the function
-
-const axios = require("axios");
-const { convertMarkdownToPlainText } = require("../utils/markdown.js");
-
 import path from "path";
-const tempDir = path.join(process.cwd(), "uploads/temp/context");
 
-const ensureTempDir = async () => {
+import { generateAndStoreQuestions } from "../utils/quiz.js"; // Import the function
+import axios from "axios";
+
+import { convertMarkdownToPlainText } from "../utils/markdown.js";
+import { getGenerativeModel } from "../services/ai.js";
+import { ensureTempDir, uploadToGemini, getGeminiCaption, extractYouTubeVideoId, getYouTubeCaptions, getYouTubeSummary } from "../utils/processing.js";
+import { generateFeedback } from "../utils/feedback.js";
+
+
+export const getUserQuizzes = async (req, res) => {
+    try {
+        const userId = req.user.userId;
+
+        const quizzes = await prisma.quiz.findMany({
+            where: { userId },
+            orderBy: { createdAt: "desc" },
+        });
+
+        res.status(200).json({
+            success: true,
+            quizzes,
+        });
+    }
+    catch (error) {
+        console.error("Error fetching user quizzes:", error);
+        res.status(500).json({
+            success: false,
+            error: "Failed to fetch user quizzes",
+            details: error.message,
+        });
+    }
+};
+
+export const getQuiz = async (req, res) => {
 	try {
-		await fs.mkdir(tempDir, { recursive: true });
-	} catch (err) {
-		console.error("Error creating temp directory:", err);
+		const quizId = req.params.id;
+
+		// First, make sure the quiz exists
+		const quiz = await prisma.quiz.findUnique({
+			where: { id: quizId },
+		});
+
+		console.log(quiz)
+
+		if (!quiz) {
+			return res.status(404).json({
+				success: false,
+				error: "Quiz does not exist",
+			});
+		}
+
+		// Get all quizQuestions for the quiz
+		const quizQuestions = await prisma.quizQuestion.findMany({
+			where: { quizId },
+			orderBy: { createdAt: "asc" },
+		});
+
+		// Return quiz details along with the quiz questions
+		return res.status(200).json({
+			success: true,
+			quiz: { ...quiz, quizQuestions },
+		});
+	} catch (error) {
+		console.error("Error fetching quiz:", error);
+		return res.status(500).json({
+			success: false,
+			error: "Failed to fetch quiz",
+			...(process.env.NODE_ENV === "development" && {
+				details: error.message,
+			}),
+		});
 	}
 };
 
-/**
- * Uploads a local image file to Gemini and returns the uploaded file info.
- */
-async function uploadToGemini(filePath, mimeType) {
-	const uploadResult = await fileManager.uploadFile(filePath, {
-		mimeType,
-		displayName: path.basename(filePath),
-	});
-	const file = uploadResult.file;
-	console.log(`Uploaded file ${file.displayName} as: ${file.name}`);
-	return file;
-}
 
-/**
- * Given a temporary image file path and its mime type, uploads the image to Gemini
- * and then calls the model with a prompt that includes the file URI.
- */
-async function getGeminiCaption(tempImagePath, mimeType) {
-	try {
-		const file = await uploadToGemini(tempImagePath, mimeType);
-
-		// Time the Gemini API call
-		console.time("Gemini Image Analysis API Call");
-		const response = await model.invoke([
-			[
-				"human",
-				`This image is from a learning unit. Please analyze it and provide a detailed explanation of its overall context, including the content and concepts conveyed in the image. Image URI: ${file.uri}
-        output:
-        "explination: {content} with in 50 words"
-        `,
-			],
-		]);
-		console.timeEnd("Gemini Image Analysis API Call");
-
-		// Extract just the text content from the response
-		return response.content;
-	} catch (err) {
-		console.error("Error getting Gemini caption:", err);
-		return "Unable to get description from Gemini.";
-	}
-}
-
-/**
- * Extract the video ID from a YouTube URL
- */
-function extractYouTubeVideoId(url) {
-	const regex =
-		/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-	const match = url.match(regex);
-	return match ? match[1] : null;
-}
-
-/**
- * Get captions for a YouTube video
- */
-async function getYouTubeCaptions(videoId, startTime = null, endTime = null) {
-	try {
-		// Time transcript fetching
-		console.time("YouTube Transcript Fetch");
-		const captions = await YoutubeTranscript.fetchTranscript(videoId, {
-			lang: "en",
-		});
-		console.timeEnd("YouTube Transcript Fetch");
-
-		// If start time and end time are specified, filter the captions
-		if (startTime !== null && endTime !== null) {
-			// Convert start and end times from seconds to milliseconds
-			const startMs = parseFloat(startTime) * 1000;
-			const endMs = parseFloat(endTime) * 1000;
-
-			// Filter captions that fall within the specified time range
-			const filteredCaptions = captions.filter((caption) => {
-				const captionStart = parseFloat(caption.offset) * 1000;
-				const captionDuration = parseFloat(caption.duration) * 1000;
-				const captionEnd = captionStart + captionDuration;
-
-				// Include captions that overlap with the specified range
-				return (
-					(captionStart >= startMs && captionStart <= endMs) ||
-					(captionEnd >= startMs && captionEnd <= endMs) ||
-					(captionStart <= startMs && captionEnd >= endMs)
-				);
-			});
-
-			// Convert the filtered captions array to a transcript string
-			return filteredCaptions.map((caption) => caption.text).join(" ");
-		}
-
-		// If no time range specified, return the full transcript
-		return captions.map((caption) => caption.text).join(" ");
-	} catch (error) {
-		console.error("Error fetching YouTube captions:", error);
-		return null;
-	}
-}
-/**
- * Given a YouTube URL, extracts the video ID, fetches captions,
- * and asks Gemini to generate a summary based on the transcript.
- */
-async function getYouTubeSummary(youtubeUrl) {
-	try {
-		console.log("Generating summary for YouTube video:", youtubeUrl);
-
-		// Extract the video ID
-		const videoId = extractYouTubeVideoId(youtubeUrl);
-		if (!videoId) {
-			return "Unable to extract video ID from the provided YouTube URL.";
-		}
-
-		// Get captions/transcript
-		const transcript = await getYouTubeCaptions(videoId);
-
-		// Define the prompt based on whether we have a transcript
-		let prompt;
-		if (transcript) {
-			prompt = `I have a transcript from a YouTube video (ID: ${videoId}). Please provide a detailed textbook content that converts it into professional content, not the conversational human speech.
-    
-    TRANSCRIPT:
-    ${transcript.substring(
-		0,
-		25000
-	)} // Limit to 25K chars in case of very long videos
-    
-    Please give the paragraph of contents.
-    
-    Output:
-    "TextBook Content: {content}"`;
-		} else {
-			prompt = `I have a YouTube video with ID: ${videoId} at URL: ${youtubeUrl}. Please provide a detailed textbook-style content description of the video. If you don't have access to the video's detailed content, please clearly state that and then offer a general, formal description of what the video might cover based on its URL and context.
-    
-    Output:
-    "TextBook Content: {content}"`;
-		}
-
-		// Time the Gemini API call
-		console.time("Gemini YouTube Summary API Call");
-		const response = await model.invoke([["human", prompt]]);
-		console.timeEnd("Gemini YouTube Summary API Call");
-
-		return response.content;
-	} catch (err) {
-		console.error("Error getting YouTube summary:", err);
-		return "Unable to get summary for this YouTube video.";
-	}
-}
 
 export const createQuiz = async (req, res) => {
 	try {
 		// Parse the config from form data
 		const config = JSON.parse(req.body.config);
+		const { title, originalContentSummary } = req.body; // New: Get title and originalContentSummary from body
 
 		// Extract user ID from the nested JWT payload
 		const userId = req.user.userId;
@@ -184,14 +99,22 @@ export const createQuiz = async (req, res) => {
 			});
 		}
 
-		// Add user existence check
-		const userExists = await prisma.user.findUnique({
+		// Add user existence check and fetch user profile data
+		const user = await prisma.user.findUnique({
 			where: { id: userId },
+			include: { userAPIKey: true }, // Include userAPIKey
 		});
 
-		if (!userExists) {
+		if (!user) {
 			return res.status(404).json({
 				error: "User not found",
+			});
+		}
+
+		// Check user's API key validity
+		if (!user.userAPIKey || !user.userAPIKey.isValid || !user.userAPIKey.apiKey) {
+			return res.status(403).json({
+				error: "A valid Google API key is required to create quizzes. Please set it in your profile.",
 			});
 		}
 
@@ -199,12 +122,14 @@ export const createQuiz = async (req, res) => {
 		const quiz = await prisma.quiz.create({
 			data: {
 				userId: String(userId),
+				title: title || null, // Populate title
 				maxNos: parseInt(totalQuestions),
 				status: "STARTING",
 				config: {
 					totalQuestions,
 					types,
 				},
+				originalContentSummary: originalContentSummary || null, // Populate summary
 			},
 		});
 
@@ -230,7 +155,7 @@ export const createQuiz = async (req, res) => {
 					let mdContent = await fs.readFile(file.path, "utf8");
 
 					// Process Images
-					const imageRegex = /!\[.*?\]\((https?:\/\/.*?)\)/g;
+					const imageRegex = /!\[(.*?)\]\((https?:\/\/.*?)\)/g;
 					const imageMatches = [...mdContent.matchAll(imageRegex)];
 
 					// Array to store details for each image
@@ -278,10 +203,7 @@ export const createQuiz = async (req, res) => {
 					// Process Images with timing
 					for (const img of imagesArray) {
 						console.time(`Image Processing: ${img.imageUrl}`);
-						const caption = await getGeminiCaption(
-							img.tempImagePath,
-							img.mimeType
-						);
+						const caption = await getGeminiCaption(req.user.apiKey, img.tempImagePath, img.mimeType);
 						console.timeEnd(`Image Processing: ${img.imageUrl}`);
 						console.log("Gemini caption:", caption);
 						mdContent = mdContent.replace(
@@ -300,8 +222,7 @@ export const createQuiz = async (req, res) => {
 					}
 
 					// Process YouTube Links (standard links)
-					const youtubeRegex =
-						/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/g;
+					const youtubeRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/g;
 					const youtubeMatches = [
 						...mdContent.matchAll(youtubeRegex),
 					];
@@ -313,7 +234,7 @@ export const createQuiz = async (req, res) => {
 						console.log("Found YouTube URL:", fullMatch);
 
 						// Get summary for the YouTube video
-						const summary = await getYouTubeSummary(fullMatch);
+						const summary = await getYouTubeSummary(req.user.apiKey, fullMatch);
 						console.log("YouTube TextBook:", summary);
 
 						// Replace the YouTube link with the summary
@@ -325,8 +246,7 @@ export const createQuiz = async (req, res) => {
 					}
 
 					// Process custom YouTube components
-					const customYoutubeRegex =
-						/<Youtube\s+videoId=['"]([^'"]+)['"](?:\s+start=['"]([^'"]+)['"])?(?:\s+end=['"]([^'"]+)['"])?.*?\/>/g;
+					const customYoutubeRegex = /<Youtube\s+videoId=['"]([^'"]+)['"](?:\s+start=['"]([^'"]+)['"])?(?:\s+end=['"]([^'"]+)['"])?.*?\/>/g;
 					const customYoutubeMatches = [
 						...mdContent.matchAll(customYoutubeRegex),
 					];
@@ -356,29 +276,14 @@ export const createQuiz = async (req, res) => {
 						// Define the prompt based on whether we have a transcript
 						let prompt;
 						if (transcript) {
-							prompt = `I have a partial transcript from a YouTube video (ID: ${videoId}). Please provide a detailed textbook-style of the content.
-              
-TRANSCRIPT:
-${transcript.substring(0, 25000)} // Limit to 25K chars in case of very long videos
-              
-Please Text Book the key points, main ideas, and important details from this video segment in formal, textbook-like language. Make the comprehensive but concise.
-            
-Output:
-"TextBook Content: {content} "`;
+							prompt = `I have a partial transcript from a YouTube video (ID: ${videoId}). Please provide a detailed textbook-style of the content.\n              \nTRANSCRIPT:\n${transcript.substring(0, 25000)} // Limit to 25K chars in case of very long videos\n              \nPlease Text Book the key points, main ideas, and important details from this video segment in formal, textbook-like language. Make the comprehensive but concise.\n            \nOutput:\n"TextBook Content: {content} "`;
 						} else {
-							prompt = `Please provide a summary of the YouTube video segment with ID: ${videoId} at URL: ${youtubeUrl} from timestamp ${startTime || "start"} to ${endTime || "end"}.
-              Focus on the main topics, key points, and overall content of this video segment.
-              If you don't have access to the video's content, please state that and provide a general description of what the video might be about based on its URL.
-              
-output:
-"TextBook Content: {content} "`;
+							prompt = `Please provide a summary of the YouTube video segment with ID: ${videoId} at URL: ${youtubeUrl} from timestamp ${startTime || "start"} to ${endTime || "end"}.\n              Focus on the main topics, key points, and overall content of this video segment.\n              If you don\'t have access to the video\'s content, please state that and provide a general description of what the video might be about based on its URL.\n              \noutput:\n"TextBook Content: {content} "`;
 						}
 
 						// Time the Gemini API call
 						console.time("Gemini Custom YouTube API Call");
-						const response = await model.invoke([
-							["human", prompt],
-						]);
+						const response = await getGenerativeModel(req.user.apiKey).invoke([["human", prompt]]);
 						console.timeEnd("Gemini Custom YouTube API Call");
 
 						// Replace the YouTube component with the summary
@@ -447,7 +352,13 @@ output:
 		console.log("Full Context:", fullcontext);
 
 		// Start generating questions asynchronously
-		generateAndStoreQuestions(quiz.id, fullcontext, config)
+		generateAndStoreQuestions(
+			quiz.id,
+			fullcontext,
+			config,
+			user.userAPIKey.apiKey, // <-- Always use the user's API key from DB
+			user
+		)
 			.then(() => {
 				console.log(
 					`Questions generated and stored for quiz ${quiz.id}`
@@ -492,43 +403,50 @@ output:
 	}
 };
 
-export const getQuiz = async (req, res) => {
-	try {
-		const quizId = req.params.id;
+export const getQuizFeedback = async (req, res) => {
+    try {
+        const quizId = req.params.id;
+        const userId = req.user?.userId;
 
-		// First, make sure the quiz exists
-		const quiz = await prisma.quiz.findUnique({
-			where: { id: quizId },
-		});
+        // Fetch quiz and its questions
+        const quiz = await prisma.quiz.findUnique({
+            where: { id: quizId },
+            include: { quizQuestions: true },
+        });
+        if (!quiz) {
+            return res.status(404).json({ error: "Quiz not found" });
+        }
 
-		console.log(quiz)
+        // Fetch user's API key (must be valid)
+        const userAPIKey = await prisma.userAPIKey.findUnique({
+            where: { userId },
+        });
+        if (!userAPIKey || !userAPIKey.isValid) {
+            return res.status(403).json({ error: "Valid Google API key is required to generate feedback." });
+        }
 
-		if (!quiz) {
-			return res.status(404).json({
-				success: false,
-				error: "Quiz does not exist",
-			});
-		}
+        // For feedback, simulate "empty" answers (or you can fetch last attempt, or allow params)
+        const quizQuestions = quiz.quizQuestions;
+        const userAnswers = quizQuestions.map(q => ({
+            quizQuestionId: q.id,
+            selectedOptionIndex: null,
+            isCorrect: false,
+        }));
+        const correctAnswers = quizQuestions.map(q => q.correctOption);
+        const score = 0;
+        const originalContentSummary = quiz.originalContentSummary || "";
 
-		// Get all quizQuestions for the quiz
-		const quizQuestions = await prisma.quizQuestion.findMany({
-			where: { quizId },
-			orderBy: { createdAt: "asc" },
-		});
-
-		// Return quiz details along with the quiz questions
-		return res.status(200).json({
-			success: true,
-			quiz: { ...quiz, quizQuestions },
-		});
-	} catch (error) {
-		console.error("Error fetching quiz:", error);
-		return res.status(500).json({
-			success: false,
-			error: "Failed to fetch quiz",
-			...(process.env.NODE_ENV === "development" && {
-				details: error.message,
-			}),
-		});
-	}
+        const feedback = await generateFeedback(
+            userAPIKey.apiKey,
+            quizQuestions,
+            userAnswers,
+            correctAnswers,
+            score,
+            originalContentSummary
+        );
+        res.json({ feedback });
+    } catch (err) {
+        console.error("Error in getQuizFeedback:", err);
+        res.status(500).json({ error: "Failed to generate feedback" });
+    }
 };

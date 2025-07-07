@@ -1,3 +1,4 @@
+
 export function convertMarkdownToPlainText(mdContent) {
   let plainText = mdContent;
 

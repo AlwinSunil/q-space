@@ -35,7 +35,7 @@ axiosInstance.interceptors.response.use(
     if (error.response.status === 403 && !originalRequest._retry) {
       originalRequest._retry = true;
       try {
-        await axiosInstance.post("/token");
+        await axiosInstance.post("/auth/token");
         return axiosInstance(originalRequest);
       } catch (err) {
         return Promise.reject(err);

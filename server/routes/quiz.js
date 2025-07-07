@@ -1,7 +1,9 @@
 import express from "express";
-import { createQuiz, getQuiz } from "../controllers/quiz.js";
+import { createQuiz, getQuiz, getUserQuizzes, getQuizFeedback } from "../controllers/quiz.js";
+import { submitQuizAttempt } from "../controllers/testAttempt.js";
 import multer from "multer";
 import path from "path";
+import fs from "fs";
 import verifyToken from "../middleware/verifyToken.js";
 
 const router = express.Router();
@@ -9,7 +11,7 @@ const router = express.Router();
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const tempDir = path.join(process.cwd(), "uploads/temp");
-    require("fs").mkdirSync(tempDir, { recursive: true });
+    fs.mkdirSync(tempDir, { recursive: true });
     cb(null, tempDir);
   },
   filename: (req, file, cb) => {
@@ -24,6 +26,9 @@ const upload = multer({
 });
 
 router.post("/new", verifyToken, upload.array("files"), createQuiz);
+router.get("/user", verifyToken, getUserQuizzes); // New route
 router.get("/:id", verifyToken, getQuiz);
+router.get("/:id/feedback", getQuizFeedback);
+
 
 export default router;

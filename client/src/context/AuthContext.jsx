@@ -45,7 +45,7 @@ export const AuthProvider = ({ children }) => {
       await axiosInstance.post("/auth/logout");
       setIsAuthenticated(false);
       setUser(null);
-      redirect("/");
+      window.location.href = "/";
     } catch (error) {
       console.error("Logout failed:", error);
     }
@@ -60,7 +60,7 @@ export const AuthProvider = ({ children }) => {
   }
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, user, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, user, logout, fetchUserDetails }}>
       {children}
     </AuthContext.Provider>
   );

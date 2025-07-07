@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useParams } from "react-router";
+import { useParams, useNavigate } from "react-router-dom";
 import clsx from "clsx";
 import Navbar from "../components/navbar";
 import axiosInstance from "../axiosInstance";
@@ -11,10 +11,14 @@ export default function QuizPage() {
     const [questions, setQuestions] = useState([]);
     const [result, setResult] = useState([]);
     const [selectedAnswers, setSelectedAnswers] = useState({});
+    const [submitting, setSubmitting] = useState(false);
+    const navigate = useNavigate();
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
     useEffect(() => {
+        let pollingInterval;
+
         const fetchQuiz = async () => {
             try {
                 const response = await axiosInstance.get(`/quiz/${id}`);
@@ -23,19 +27,56 @@ export default function QuizPage() {
                 setResult(response.data);
                 setQuestions(quiz.quizQuestions);
                 setLoading(false);
+
+                // Stop polling if quiz is completed or failed
+                if (quiz.status === "COMPLETED" || quiz.status === "FAILED") {
+                    clearInterval(pollingInterval);
+                }
             } catch (error) {
                 console.error("Error fetching quiz:", error);
                 setError(error.response?.data?.error || "Failed to load quiz");
                 setLoading(false);
+                clearInterval(pollingInterval); // Stop polling on error
             }
         };
 
-        fetchQuiz();
+        fetchQuiz(); // Initial fetch
+
+        // Set up polling every 3 seconds
+        pollingInterval = setInterval(fetchQuiz, 3000);
+
+        // Cleanup interval on component unmount
+        return () => clearInterval(pollingInterval);
     }, [id]);
 
     const handleAnswerClick = (qIdx, optionIdx) => {
         if (mode !== "Workout") return;
         setSelectedAnswers((prev) => ({ ...prev, [qIdx]: optionIdx }));
+    };
+
+    const handleSubmitQuiz = async () => {
+        setSubmitting(true);
+        try {
+            const formattedAnswers = Object.keys(selectedAnswers).map(qIdx => ({
+                quizQuestionId: questions[qIdx].id,
+                selectedOptionIndex: selectedAnswers[qIdx]
+            }));
+
+            const response = await axiosInstance.post(`/test-attempts/${id}/submit`, {
+                userAnswers: formattedAnswers
+            });
+
+            if (response.data.success) {
+                navigate(`/test-results/${response.data.testAttemptId}`);
+            } else {
+                setError(response.data.error || "Failed to submit quiz.");
+            }
+        } catch (err) {
+            console.error("Error submitting quiz:", err);
+            setError(err.response?.data?.error || "Failed to submit quiz.");
+        } finally {
+            setSubmitting(false);
+        }
     };
 
     const getOptionClass = (q, qIdx, optionIdx) => {
@@ -155,6 +196,18 @@ export default function QuizPage() {
                             Waiting for questions...
                         </div>
                     </div>
+                )}
+                {mode === "Workout" && questions.length > 0 && (
+                    <button
+                        onClick={handleSubmitQuiz}
+                        disabled={submitting || Object.keys(selectedAnswers).length !== questions.length}
+                        className={clsx(
+                            "mt-8 px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-lg font-medium",
+                            (submitting || Object.keys(selectedAnswers).length !== questions.length) && "opacity-50 cursor-not-allowed"
+                        )}
+                    >
+                        {submitting ? "Submitting..." : "Submit Quiz"}
+                    </button>
                 )}
             </div>
         </>

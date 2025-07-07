@@ -16,7 +16,7 @@ export default function Footer() {
     <footer className="bg-white shadow-md border-t border-gray-200">
       <div className="relative flex justify-between px-4 py-2">
         <p className="font-medium">
-          <i>Q</i>-space
+          <i>Re-</i>Learn
         </p>
         <div className="flex gap-1.5 text-sm items-center font-normal">
           Made with ❤️ from

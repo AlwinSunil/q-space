@@ -7,76 +7,81 @@ import { google, oauth2Client, SCOPES } from "../services/googleapis.js";
 const router = express.Router();
 
 async function upsertUserWithGoogleAuth(userData, tokens) {
-    const {
-        id: googleId,
-        email,
-        verified_email: emailVerified,
-        given_name: firstName,
-        family_name: lastName,
-        name: displayName,
-        picture: profileImage,
-    } = userData;
+    try {
+        const {
+            id: googleId,
+            email,
+            verified_email: emailVerified,
+            given_name: firstName,
+            family_name: lastName,
+            name: displayName,
+            picture: profileImage,
+        } = userData;
 
-    const {
-        access_token: accessToken,
-        refresh_token: refreshToken,
-        id_token: idToken,
-        token_type: tokenType,
-        scope,
-        expiry_date: expiryDateMs,
-    } = tokens;
+        const {
+            access_token: accessToken,
+            refresh_token: refreshToken,
+            id_token: idToken,
+            token_type: tokenType,
+            scope,
+            expiry_date: expiryDateMs,
+        } = tokens;
 
-    const expiryDate = expiryDateMs
-        ? new Date(expiryDateMs)
-        : new Date(Date.now() + 3600 * 1000);
+        const expiryDate = expiryDateMs
+            ? new Date(expiryDateMs)
+            : new Date(Date.now() + 3600 * 1000);
 
-    return prisma.$transaction(async (tx) => {
-        // Create or update user
-        const user = await tx.user.upsert({
-            where: { googleId },
-            update: {
-                email,
-                emailVerified,
-                firstName,
-                lastName,
-                displayName,
-                profileImage,
-            },
-            create: {
-                googleId,
-                email,
-                emailVerified,
-                firstName,
-                lastName,
-                displayName,
-                profileImage,
-            },
+        return prisma.$transaction(async (tx) => {
+            // Create or update user
+            const user = await tx.user.upsert({
+                where: { googleId },
+                update: {
+                    email,
+                    emailVerified,
+                    firstName,
+                    lastName,
+                    displayName,
+                    profileImage,
+                },
+                create: {
+                    googleId,
+                    email,
+                    emailVerified,
+                    firstName,
+                    lastName,
+                    displayName,
+                    profileImage,
+                },
+            });
+
+            // Create or update auth tokens
+            await tx.googleAuth.upsert({
+                where: { userId: user.id },
+                update: {
+                    accessToken,
+                    refreshToken: refreshToken ?? null,
+                    idToken,
+                    tokenType,
+                    scope,
+                    expiryDate,
+                },
+                create: {
+                    userId: user.id,
+                    accessToken,
+                    refreshToken: refreshToken ?? null,
+                    idToken,
+                    tokenType,
+                    scope,
+                    expiryDate,
+                },
+            });
+
+            return user;
         });
-
-        // Create or update auth tokens
-        await tx.googleAuth.upsert({
-            where: { userId: user.id },
-            update: {
-                accessToken,
-                refreshToken: refreshToken ?? null,
-                idToken,
-                tokenType,
-                scope,
-                expiryDate,
-            },
-            create: {
-                userId: user.id,
-                accessToken,
-                refreshToken: refreshToken ?? null,
-                idToken,
-                tokenType,
-                scope,
-                expiryDate,
-            },
-        });
-
-        return user;
-    });
+    } catch (error) {
+        console.error("Error in upsertUserWithGoogleAuth:", error);
+        throw new Error("Failed to update or create user.");
+    }
 }
 
 router.get("/google", (req, res) => {
@@ -219,7 +224,15 @@ router.get("/", async (req, res) => {
                 displayName: true,
                 profileImage: true,
                 createdAt: true,
-                Quiz: {
+                learningGoals: true,
+                academicLevel: true,
+                interests: true,
+                userAPIKey: {
+                    select: {
+                        isValid: true,
+                    },
+                },
+                quizzes: {
                     select: {
                         id: true,
                         status: true,
@@ -239,8 +252,8 @@ router.get("/", async (req, res) => {
             authenticated: true,
             user: {
                 ...user,
-                quizCount: user.Quiz.length,
-                onGoingGeneration: user.Quiz.filter(
+                quizCount: user.quizzes.length,
+                onGoingGeneration: user.quizzes.filter(
                     (q) => q.status === "GENERATING"
                 ),
             },

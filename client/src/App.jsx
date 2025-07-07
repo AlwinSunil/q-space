@@ -1,11 +1,14 @@
-import { Routes, Route, Navigate } from "react-router";
-import { AuthProvider, useAuth } from "./context/AuthContext";
+import { Routes, Route, Navigate } from "react-router-dom";
+import { useAuth } from "./context/AuthContext";
 import Footer from "./components/footer";
 import "./App.css";
 
 import Landing from "./pages/landing";
 import New from "./pages/new";
 import QuizPage from "./pages/quiz-page";
+import ProfileSettings from "./pages/ProfileSettings";
+import HistoryPage from "./pages/HistoryPage";
+import TestResultPage from "./pages/TestResultPage";
 
 const ProtectedRoute = ({ element }) => {
   const { isAuthenticated } = useAuth();
@@ -21,18 +24,21 @@ const routes = [
   { path: "/", element: <LoginRedirect /> },
   { path: "/new", element: <ProtectedRoute element={<New />} /> },
   { path: "/q/:id", element: <ProtectedRoute element={<QuizPage />} /> },
+  { path: "/settings", element: <ProtectedRoute element={<ProfileSettings />} /> },
+  { path: "/history", element: <ProtectedRoute element={<HistoryPage />} /> },
+  { path: "/test-results/:id", element: <ProtectedRoute element={<TestResultPage />} /> },
 ];
 
 function App() {
   return (
-    <AuthProvider>
+    <>
       <Routes>
         {routes.map((route, index) => (
           <Route key={index} path={route.path} element={route.element} />
         ))}
       </Routes>
       <Footer />
-    </AuthProvider>
+    </>
   );
 }
 

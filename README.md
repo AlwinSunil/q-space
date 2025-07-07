@@ -4,7 +4,7 @@
 Deployment Link: https://qspace.flern.in/
 
 ## Overview
-Q Space is an AI-driven platform designed to automate the process of quiz creation, transforming content from various media sources into high-quality assessments. By leveraging advanced AI models, Q Space streamlines content ingestion, processing, and question generation, significantly reducing the time educators spend on manual quiz creation.
+Re-Learn is an AI-driven platform designed to automate the process of quiz creation, transforming content from various media sources into high-quality assessments. By leveraging advanced AI models, Re-Learn streamlines content ingestion, processing, and question generation, significantly reducing the time educators spend on manual quiz creation.
 
 ## Features
 ### 🚀 Automated Quiz Generation

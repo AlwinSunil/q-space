@@ -1,79 +1,138 @@
-import { getYouTubeSummary } from "./ai";
+import fs from "fs/promises";
+import path from "path";
+import axios from "axios";
+import { YoutubeTranscript } from "youtube-transcript";
+import { getGenerativeModel, getFileManager } from "../services/ai.js";
+import { convertMarkdownToPlainText } from "./markdown.js";
 
-function getMimeType(imageUrl) {
-  if (imageUrl.endsWith(".png")) return "image/png";
-  if (imageUrl.endsWith(".gif")) return "image/gif";
-  return "image/jpeg";
+const tempDir = path.join(process.cwd(), "uploads/temp/context");
+
+export const ensureTempDir = async () => {
+	try {
+		await fs.mkdir(tempDir, { recursive: true });
+	} catch (err) {
+		console.error("Error creating temp directory:", err);
+	}
+};
+
+export async function uploadToGemini(apiKey, filePath, mimeType) {
+	const fileManager = getFileManager(apiKey);
+	const uploadResult = await fileManager.uploadFile(filePath, {
+		mimeType,
+		displayName: path.basename(filePath),
+	});
+	const file = uploadResult.file;
+	console.log(`Uploaded file ${file.displayName} as: ${file.name}`);
+	return file;
 }
 
-async function downloadImage(imageUrl) {
-  const response = await axios.get(imageUrl, { responseType: "arraybuffer" });
-  const filename = `${Date.now()}-${path.basename(new URL(imageUrl).pathname)}`;
-  const tempImagePath = path.join(tempDir, filename);
-  await fs.writeFile(tempImagePath, response.data);
-  const mimeType = getMimeType(imageUrl);
-  return { tempImagePath, mimeType };
+export async function getGeminiCaption(apiKey, tempImagePath, mimeType) {
+	try {
+		const file = await uploadToGemini(apiKey, tempImagePath, mimeType);
+		const model = getGenerativeModel(apiKey);
+
+		// Time the Gemini API call
+		console.time("Gemini Image Analysis API Call");
+		const response = await model.invoke([
+			[
+				"human",
+				`This image is from a learning unit. Please analyze it and provide a detailed explanation of its overall context, including the content and concepts conveyed in the image. Image URI: ${file.uri}
+        output:
+        "explination: {content} with in 50 words"
+        `,
+			],
+		]);
+		console.timeEnd("Gemini Image Analysis API Call");
+
+		// Extract just the text content from the response
+		return response.content;
+	} catch (err) {
+		console.error("Error getting Gemini caption:", err);
+		return "Unable to get description from Gemini.";
+	}
 }
 
-async function processImages(mdContent) {
-  const imageRegex = /!\[.*?\]\((https?:\/\/.*?)\)/g;
-  const imageMatches = [...mdContent.matchAll(imageRegex)];
-  const imagesArray = [];
-
-  for (const match of imageMatches) {
-    const [fullMatch, imageUrl] = match;
-    console.log("Found image URL:", imageUrl);
-    try {
-      const { tempImagePath, mimeType } = await downloadImage(imageUrl);
-      imagesArray.push({ fullMatch, tempImagePath, mimeType });
-    } catch (err) {
-      console.error("Error downloading image:", imageUrl, err);
-    }
-  }
-
-  for (const img of imagesArray) {
-    console.time(`Image Processing: ${img.tempImagePath}`);
-    const caption = await getGeminiCaption(img.tempImagePath, img.mimeType);
-    console.timeEnd(`Image Processing: ${img.tempImagePath}`);
-    mdContent = mdContent.replace(img.fullMatch, `image to text: ${caption}`);
-    await fs
-      .unlink(img.tempImagePath)
-      .catch((err) => console.error("Error deleting image:", err));
-  }
-  return mdContent;
+export function extractYouTubeVideoId(url) {
+	const regex =
+		/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
+	const match = url.match(regex);
+	return match ? match[1] : null;
 }
 
-async function processYouTubeLinks(mdContent) {
-  const youtubeRegex =
-    /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/g;
-  for (const match of [...mdContent.matchAll(youtubeRegex)]) {
-    const fullMatch = match[0];
-    console.time(`YouTube Processing: ${fullMatch}`);
-    const summary = await getYouTubeSummary(fullMatch);
-    console.timeEnd(`YouTube Processing: ${fullMatch}`);
-    mdContent = mdContent.replace(fullMatch, `Video TextBook: ${summary}`);
-  }
-  return mdContent;
+export async function getYouTubeCaptions(videoId, startTime = null, endTime = null) {
+	try {
+		// Time transcript fetching
+		console.time("YouTube Transcript Fetch");
+		const captions = await YoutubeTranscript.fetchTranscript(videoId, {
+			lang: "en",
+		});
+		console.timeEnd("YouTube Transcript Fetch");
+
+		// If start time and end time are specified, filter the captions
+		if (startTime !== null && endTime !== null) {
+			// Convert start and end times from seconds to milliseconds
+			const startMs = parseFloat(startTime) * 1000;
+			const endMs = parseFloat(endTime) * 1000;
+
+			// Filter captions that fall within the specified time range
+			const filteredCaptions = captions.filter((caption) => {
+				const captionStart = parseFloat(caption.offset) * 1000;
+				const captionDuration = parseFloat(caption.duration) * 1000;
+				const captionEnd = captionStart + captionDuration;
+
+				// Include captions that overlap with the specified range
+				return (
+					(captionStart >= startMs && captionStart <= endMs) ||
+					(captionEnd >= startMs && captionEnd <= endMs) ||
+					(captionStart <= startMs && captionEnd >= endMs)
+				);
+			});
+
+			// Convert the filtered captions array to a transcript string
+			return filteredCaptions.map((caption) => caption.text).join(" ");
+		}
+
+		// If no time range specified, return the full transcript
+		return captions.map((caption) => caption.text).join(" ");
+	} catch (error) {
+		console.error("Error fetching YouTube captions:", error);
+		return null;
+	}
 }
 
-async function processCustomYouTube(mdContent) {
-  const customYoutubeRegex =
-    /<Youtube\s+videoId=['"]([^'"]+)['"](?:\s+start=['"]([^'"]+)['"])?(?:\s+end=['"]([^'"]+)['"])?.*?\/>/g;
-  for (const match of [...mdContent.matchAll(customYoutubeRegex)]) {
-    const [fullMatch, videoId, startTime, endTime] = match;
-    console.time(`Custom YouTube Processing: ${videoId}`);
-    const transcript = await getYouTubeCaptions(videoId, startTime, endTime);
-    const summary = await generateVideoSummary(
-      videoId,
-      transcript,
-      startTime,
-      endTime,
-    );
-    console.timeEnd(`Custom YouTube Processing: ${videoId}`);
-    mdContent = mdContent.replace(
-      fullMatch,
-      `Video summary (${startTime || "start"} to ${endTime || "end"}): ${summary}`,
-    );
-  }
-  return mdContent;
+export async function getYouTubeSummary(apiKey, youtubeUrl) {
+	try {
+		console.log("Generating summary for YouTube video:", youtubeUrl);
+
+		// Extract the video ID
+		const videoId = extractYouTubeVideoId(youtubeUrl);
+		if (!videoId) {
+			return "Unable to extract video ID from the provided YouTube URL.";
+		}
+
+		// Get captions/transcript
+		const transcript = await getYouTubeCaptions(videoId);
+
+		// Define the prompt based on whether we have a transcript
+		let prompt;
+		if (transcript) {
+			prompt = `I have a transcript from a YouTube video (ID: ${videoId}). Please provide a detailed textbook content that converts it into professional content, not the conversational human speech.\n    \n    TRANSCRIPT:\n    ${transcript.substring(
+		0,
+		25000
+	)} // Limit to 25K chars in case of very long videos\n    \n    Please give the paragraph of contents.\n    \n    Output:\n    "TextBook Content: {content}"`;
+		} else {
+			prompt = `I have a YouTube video with ID: ${videoId} at URL: ${youtubeUrl}. Please provide a detailed textbook-style content description of the video. If you don\'t have access to the video\'s detailed content, please clearly state that and then offer a general, formal description of what the video might cover based on its URL and context.\n    \n    Output:\n    "TextBook Content: {content}"`;
+		}
+
+		// Time the Gemini API call
+		console.time("Gemini YouTube Summary API Call");
+		const model = getGenerativeModel(apiKey);
+		const response = await model.invoke([["human", prompt]]);
+		console.timeEnd("Gemini YouTube Summary API Call");
+
+		return response.content;
+	} catch (err) {
+		console.error("Error getting YouTube summary:", err);
+		return "Unable to get summary for this YouTube video.";
+	}
 }
