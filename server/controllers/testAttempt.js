@@ -5,8 +5,26 @@ import fs from "fs/promises";
 
 // POST /api/test-attempts/:id/submit
 export const submitQuizAttempt = async (req, res) => {
+    const testAttemptId = req.params.id;  // Fix variable name
+    console.log(`Beginning submission for test attempt ID: ${testAttemptId}`);
+    
     try {
-        const testAttemptId = req.params.id;
+        // Check if this attempt has already been submitted
+        const existingAttempt = await prisma.testAttempt.findUnique({
+            where: { id: testAttemptId },
+            select: { userAnswers: true }
+        });
+
+        if (existingAttempt && existingAttempt.userAnswers && 
+            existingAttempt.userAnswers.some(ans => ans.selectedOptionIndex !== null)) {
+            console.log(`Attempt ${testAttemptId} has already been submitted with answers. Preventing duplicate submission.`);
+            return res.status(200).json({
+                success: true,
+                message: "This quiz has already been submitted",
+                testAttemptId: testAttemptId
+            });
+        }
+
         const { userAnswers } = req.body;
 
         // Fetch the test attempt and quiz
@@ -58,7 +76,7 @@ export const submitQuizAttempt = async (req, res) => {
             };
         });
 
-        // Calculate score (percentage)
+        // Calculate score and correctAnswersCount
         let correct = 0;
         for (let i = 0; i < quizQuestions.length; i++) {
             if (formattedUserAnswers[i].isCorrect) correct++;
@@ -74,12 +92,14 @@ export const submitQuizAttempt = async (req, res) => {
             fullContent
         );
 
-        // Store user answers, score, and feedback in the testAttempt
+        // Store user answers, score, and feedback in the testAttempt with the required counts
         await prisma.testAttempt.update({
             where: { id: testAttemptId },
             data: {
                 userAnswers: formattedUserAnswers,
                 score,
+                correctAnswersCount: correct,
+                incorrectAnswersCount: quizQuestions.length - correct,
                 feedback
             }
         });
@@ -91,9 +111,9 @@ export const submitQuizAttempt = async (req, res) => {
             feedback
         });
         // After saving to database
-        console.log(`Successfully saved submission for attempt ID: ${attemptId}`);
+        console.log(`Successfully saved submission for test attempt ID: ${testAttemptId}`);
     } catch (err) {
-        console.error("Error in submitQuizAttempt:", err);
+        console.error(`Error in submitQuizAttempt for ID: ${testAttemptId}:`, err);
         res.status(500).json({ error: "Failed to submit quiz and generate feedback" });
     }
 };
@@ -178,8 +198,7 @@ export const startTestAttempt = async (req, res) => {
             return res.status(404).json({ error: "Quiz not found" });
         }
 
-        // Optionally: allow only one active attempt per user/quiz, or always create new
-        // Here: always create a new attempt (for retake)
+        // Create a new attempt with the required fields
         const testAttempt = await prisma.testAttempt.create({
             data: {
                 quizId,
@@ -190,6 +209,8 @@ export const startTestAttempt = async (req, res) => {
                     isCorrect: false,
                 })),
                 score: 0,
+                correctAnswersCount: 0, // Add this required field
+                incorrectAnswersCount: quiz.quizQuestions.length, // Add this field
                 takenAt: new Date(),
                 feedback: null
             }
@@ -202,21 +223,33 @@ export const startTestAttempt = async (req, res) => {
     }
 };
 
-// Add this endpoint to get the latest test attempt for a quiz and user
+// Get test attempt by quiz ID
 export const getTestAttemptByQuiz = async (req, res) => {
     try {
         const quizId = req.params.id;
         const userId = req.user.userId;
 
+        console.log(`Looking for test attempt for quizId: ${quizId} and userId: ${userId}`);
+        
+        // Find the most recent test attempt for this quiz and user
         const testAttempt = await prisma.testAttempt.findFirst({
-            where: { quizId, userId },
-            orderBy: { takenAt: "desc" }
+            where: { 
+                quizId, 
+                userId
+            },
+            orderBy: { takenAt: 'desc' }
         });
 
-        res.status(200).json({ testAttempt });
+        return res.status(200).json({ 
+            success: true,
+            testAttempt 
+        });
     } catch (err) {
-        console.error("Error in getTestAttemptByQuiz:", err);
-        res.status(500).json({ error: "Failed to fetch test attempt" });
+        console.error(`Error in getTestAttemptByQuiz for quizId: ${req.params.id}:`, err);
+        res.status(500).json({ 
+            success: false,
+            error: "Failed to fetch test attempt" 
+        });
     }
 };
 

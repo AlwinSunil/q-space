@@ -1,102 +1,118 @@
-import { getFeedbackAgent } from "../services/ai.js";
+import { getGenerativeModel } from "../services/ai.js";
 
-// 1. Ensure originalContentSummary is always a string (never null/undefined)
-// 2. Add more robust error handling and logging for agent output
-// 3. (Frontend chart/visual feedback is handled in React, not here)
+export async function generateFeedback(apiKey, quizQuestions, userAnswers, score, originalContent) {
+  try {
+    // Create a mapping of question IDs to their content and correct answers
+    const questionsMap = quizQuestions.reduce((acc, q) => {
+      acc[q.id] = {
+        question: q.question,
+        options: q.options,
+        correctOption: q.correctOption,
+      };
+      return acc;
+    }, {});
 
-export const generateFeedback = async (
-    apiKey,
-    quizQuestions, // Array of full question objects from quiz.quizQuestions
-    userAnswers,   // Array of user answer objects from testAttempt.userAnswers
-    overallScore,  // The calculated score (number)
-    originalContentSummary // The original content summary (string)
-) => {
-    try {
-        // Defensive: Ensure apiKey is a non-empty string
-        if (!apiKey || typeof apiKey !== "string") {
-            throw new Error("No API key provided to generateFeedback");
-        }
+    // Prepare data for the AI request
+    const feedbackData = {
+      quizQuestions: quizQuestions.map((q) => ({
+        id: q.id,
+        question: q.question,
+        options: q.options,
+        correctOption: q.correctOption,
+      })),
+      userAnswers: userAnswers.map((ua) => ({
+        quizQuestionId: ua.quizQuestionId,
+        selectedOptionIndex: ua.selectedOptionIndex,
+        isCorrect:
+          ua.selectedOptionIndex === questionsMap[ua.quizQuestionId]?.correctOption,
+      })),
+      score,
+    };
 
-        // Defensive: Ensure overallScore is a number (not an array)
-        const safeScore = Array.isArray(overallScore)
-            ? (overallScore.length > 0 ? overallScore[0] : 0)
-            : (typeof overallScore === "number" ? overallScore : 0);
+    // Create the model and generate feedback
+    const model = getGenerativeModel(apiKey);
+    
+    // Build the prompt
+    const prompt = `You are an expert educational feedback AI. Given the following quiz attempt data, generate a structured, interactive, and engaging feedback report. Output a valid JSON object with this structure:
 
-        // Defensive: Ensure originalContentSummary is a string
-        const safeContentSummary =
-            typeof originalContentSummary === "string" && originalContentSummary.trim().length > 0
-                ? originalContentSummary
-                : "No summary provided. Please reference the quiz questions for context.";
-
-        // Prepare quizAttemptDetails for the feedback agent
-        const quizAttemptDetails = quizQuestions.map(q => {
-            const userAnswer = userAnswers.find(ua => ua.quizQuestionId === q.id);
-            const selectedOptionIndex = userAnswer ? userAnswer.selectedOptionIndex : null;
-            const isCorrect = selectedOptionIndex !== null && selectedOptionIndex === q.correctOption;
-
-            return {
-                questionId: q.id,
-                question: q.question,
-                options: q.options,
-                correctOption: q.correctOption,
-                selectedOptionIndex: selectedOptionIndex,
-                isCorrect: isCorrect,
-            };
-        });
-
-        const context = {
-            quizAttemptDetails,
-            score: safeScore,
-            originalContentSummary: safeContentSummary,
-        };
-
-        // Call the plain LLM feedback agent (no tools/agent logic)
-        const feedbackAgent = getFeedbackAgent(
-            apiKey,
-            context.quizAttemptDetails,
-            userAnswers,
-            quizQuestions.map(q => q.correctOption),
-            context.score,
-            context.originalContentSummary
-        );
-
-        console.log("Feedback context sent to agent:", context);
-
-        const agentResponse = await feedbackAgent.invoke();
-
-        console.log("Raw agent output:", agentResponse.output);
-
-        let parsed;
-        try {
-            // If the output is wrapped in a code block, extract the JSON only
-            let output = agentResponse.output;
-            if (typeof output === "string" && output.trim().startsWith("```json")) {
-                output = output.replace(/^```json/, "").replace(/```$/, "").trim();
-            }
-            parsed = JSON.parse(output);
-        } catch (e) {
-            console.error("AI feedback output not valid JSON:", agentResponse.output);
-            return {
-                overallFeedback: "Failed to generate detailed feedback. Invalid JSON from AI.",
-                questionFeedback: [],
-                recommendations: "Please try again later.",
-                debug: agentResponse.output
-            };
-        }
-        return parsed;
-    } catch (error) {
-        console.error("Error generating AI feedback:", error, {
-            apiKey: !!apiKey,
-            quizQuestionsLength: quizQuestions?.length,
-            userAnswersLength: userAnswers?.length,
-            overallScore,
-            originalContentSummaryType: typeof originalContentSummary
-        });
-        return {
-            overallFeedback: "Failed to generate detailed feedback.",
-            questionFeedback: [],
-            recommendations: "Please try again later.",
-            debug: error?.message || error // Add error message for debugging
-        };
+{
+  "overallFeedback": "A concise summary of performance, strengths, and areas for improvement",
+  "questionFeedback": [
+    {
+      "questionId": "the question id",
+      "isCorrect": true/false,
+      "explanation": "Explanation for why the answer is right/wrong",
+      "concept": "The main concept being tested"
     }
-};
+  ],
+  "recommendations": "Actionable suggestions for improvement",
+  "graphData": {
+    "correct": number,
+    "incorrect": number,
+    "conceptBreakdown": [
+      {"concept": "Concept Name", "correct": number, "incorrect": number}
+    ]
+  },
+  "interactive": {
+    "conceptExplanation": "Explanation of a weak concept",
+    "practiceQuestion": {
+      "question": "A practice question",
+      "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+      "correctIndex": 0-3,
+      "explanation": "Why this answer is correct"
+    }
+  }
+}
+
+Quiz Questions: ${JSON.stringify(feedbackData.quizQuestions, null, 2)}
+User Answers: ${JSON.stringify(feedbackData.userAnswers, null, 2)}
+Score: ${score}
+Original Content: ${originalContent ? originalContent.substring(0, 3000) : "No content provided"}`;
+
+    // Call the model
+    const response = await model.invoke(prompt);
+    console.log("Raw agent output:", response.content);
+
+    // Parse the response, handling code blocks if present
+    let parsedFeedback;
+    try {
+      // Extract JSON from code blocks if present
+      const jsonMatch = response.content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      let jsonString;
+
+      if (jsonMatch && jsonMatch[1]) {
+        // Found JSON in code block
+        jsonString = jsonMatch[1].trim();
+      } else {
+        // Try parsing the whole response
+        jsonString = response.content.trim();
+      }
+
+      parsedFeedback = JSON.parse(jsonString);
+      
+      // Validate that the feedback has the expected structure
+      if (!parsedFeedback.overallFeedback || !Array.isArray(parsedFeedback.questionFeedback)) {
+        throw new Error("Invalid feedback structure");
+      }
+      
+      return parsedFeedback;
+      
+    } catch (error) {
+      console.error("Error parsing feedback:", error);
+      // If parsing fails, return a basic feedback object
+      return {
+        debug: response.content, // Store the raw response for debugging
+        overallFeedback: "Failed to generate detailed feedback. Invalid JSON from AI.",
+        questionFeedback: [],
+        recommendations: "Please try again later."
+      };
+    }
+  } catch (error) {
+    console.error("Error generating feedback:", error);
+    return {
+      overallFeedback: "An error occurred while generating feedback.",
+      questionFeedback: [],
+      recommendations: "Please try again later."
+    };
+  }
+}

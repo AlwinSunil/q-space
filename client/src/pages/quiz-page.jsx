@@ -15,6 +15,8 @@ export default function QuizPage() {
     const navigate = useNavigate();
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    // Add state to store the test attempt ID
+    const [testAttemptId, setTestAttemptId] = useState(null);
 
     useEffect(() => {
         let pollingInterval;
@@ -54,16 +56,40 @@ export default function QuizPage() {
         const ensureTestAttempt = async () => {
             try {
                 // Try to fetch the test attempt for this quiz and user
-                const resp = await axiosInstance.get(`/test-attempts/by-quiz/${id}`);
-                if (!resp.data.testAttempt) {
-                    // If not found, create a new test attempt
-                    await axiosInstance.post(`/test-attempts/${id}/start`);
+                console.log(`Fetching test attempt for quiz: ${id}`);
+                
+                try {
+                    const resp = await axiosInstance.get(`/test-attempts/by-quiz/${id}`);
+                    if (resp.data.testAttempt) {
+                        console.log("Found existing test attempt:", resp.data.testAttempt.id);
+                        // Store the test attempt ID if found
+                        setTestAttemptId(resp.data.testAttempt.id);
+                        return; // Exit early if found
+                    }
+                } catch (fetchErr) {
+                    console.warn("Could not fetch test attempts, will try to create a new one:", fetchErr.message);
+                    // Continue to creation step
+                }
+                
+                // If not found or error occurred, create a new test attempt
+                console.log("Creating new test attempt for quiz:", id);
+                const createResp = await axiosInstance.post(`/test-attempts/${id}/start`);
+                if (createResp.data.success && createResp.data.testAttempt) {
+                    console.log("Created new test attempt:", createResp.data.testAttempt.id);
+                    setTestAttemptId(createResp.data.testAttempt.id);
+                } else {
+                    console.error("Failed to create test attempt:", createResp.data);
+                    throw new Error("Failed to create test attempt");
                 }
             } catch (e) {
-                // Ignore if already exists or not needed
+                console.error("Error ensuring test attempt:", e);
+                setError("Failed to initialize quiz. Please try again.");
             }
         };
-        ensureTestAttempt();
+        
+        if (id) {
+            ensureTestAttempt();
+        }
     }, [id]);
 
     const handleAnswerClick = (qIdx, optionIdx) => {
@@ -74,12 +100,20 @@ export default function QuizPage() {
     const handleSubmitQuiz = async () => {
         setSubmitting(true);
         try {
+            // Use testAttemptId instead of quiz id
+            if (!testAttemptId) {
+                throw new Error("No active test attempt found. Please refresh the page.");
+            }
+            
+            console.log("Submitting answers for test attempt:", testAttemptId);
             const formattedAnswers = Object.keys(selectedAnswers).map(qIdx => ({
                 quizQuestionId: questions[qIdx].id,
                 selectedOptionIndex: selectedAnswers[qIdx]
             }));
 
-            const response = await axiosInstance.post(`/test-attempts/${id}/submit`, {
+            console.log("Formatted answers:", JSON.stringify(formattedAnswers));
+            
+            const response = await axiosInstance.post(`/test-attempts/${testAttemptId}/submit`, {
                 userAnswers: formattedAnswers
             });
 
@@ -90,7 +124,11 @@ export default function QuizPage() {
             }
         } catch (err) {
             console.error("Error submitting quiz:", err);
-            setError(err.response?.data?.error || "Failed to submit quiz.");
+            setError(
+                err.response?.data?.error || 
+                err.message || 
+                "Failed to submit quiz. Please check your connection and try again."
+            );
         } finally {
             setSubmitting(false);
         }
@@ -225,6 +263,22 @@ export default function QuizPage() {
                     >
                         {submitting ? "Submitting..." : "Submit Quiz"}
                     </button>
+                )}
+                
+                {/* Progress indicator */}
+                {mode === "Workout" && questions.length > 0 && (
+                    <div className="mt-4 w-full max-w-xl px-4">
+                        <div className="flex justify-between text-xs text-gray-500 mb-1">
+                            <span>Progress</span>
+                            <span>{Object.keys(selectedAnswers).length} of {questions.length} answered</span>
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-2">
+                            <div 
+                                className="bg-blue-600 h-2 rounded-full transition-all duration-300" 
+                                style={{ width: `${(Object.keys(selectedAnswers).length / questions.length) * 100}%` }}
+                            ></div>
+                        </div>
+                    </div>
                 )}
             </div>
         </>
