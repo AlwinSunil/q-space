@@ -35,14 +35,22 @@ export async function generateAndStoreQuestions(
     }
 
     try {
-        const prompt = `You are an expert quiz creator. Based on the following content, generate exactly ${totalToGenerate} quiz questions: ${types.mcq} Multiple Choice questions and ${types.trueFalse} True/False questions.
+        const prompt = `You are an expert quiz creator. Based on the following content:
+1. First, generate a SHORT, CONCISE TITLE for the quiz (2-3 words only).
+2. Then generate exactly ${totalToGenerate} quiz questions: ${types.mcq} Multiple Choice questions and ${types.trueFalse} True/False questions.
 
-The output MUST be a valid JSON array of question objects. Each object must have the following format:
+The output MUST be a valid JSON object with the following format:
 {
-  "question": "The question text",
-  "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
-  "correctOption": 0,
-  "questionType": "MULTIPLE_CHOICE"
+  "title": "Your Short Quiz Title",
+  "questions": [
+    {
+      "question": "The question text",
+      "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+      "correctOption": 0,
+      "questionType": "MULTIPLE_CHOICE"
+    },
+    ...more questions...
+  ]
 }
 
 For True/False questions, the "options" array must be ["True", "False"].
@@ -52,13 +60,16 @@ Content:
 ${fullcontext}
 ---
 
-Do not include any text outside of the JSON array.`;
+Do not include any text outside of the JSON object.`;
 
         const llmResponse = await model.invoke(prompt);
         const response = llmResponse.content;
         console.log(response);
 
-        let generatedQuestions;
+        let parsedResponse;
+        let quizTitle = "Untitled Quiz"; // Default title
+        let generatedQuestions = [];
+
         try {
             console.log("Raw LLM response:", response);
             // Use a regex to extract the JSON string, accounting for variations in markdown code blocks
@@ -71,7 +82,7 @@ Do not include any text outside of the JSON array.`;
                 jsonString = response.trim();
             }
             console.log("Extracted JSON string:", jsonString);
-            generatedQuestions = JSON.parse(jsonString);
+            parsedResponse = JSON.parse(jsonString);
         } catch (parseError) {
             console.error("Error parsing JSON response:", parseError);
             await prisma.quiz.update({
@@ -81,7 +92,13 @@ Do not include any text outside of the JSON array.`;
             return;
         }
 
-        if (Array.isArray(generatedQuestions)) {
+        if (parsedResponse.title) {
+            quizTitle = parsedResponse.title;
+        }
+
+        if (Array.isArray(parsedResponse.questions)) {
+            generatedQuestions = parsedResponse.questions;
+
             generatedQuestions.forEach((q) => {
                 if (q.questionType === "MULTIPLE_CHOICE") {
                     questionCounts.mcq++;
@@ -107,6 +124,15 @@ Do not include any text outside of the JSON array.`;
             });
             return;
         }
+
+        await prisma.quiz.update({
+            where: { id: quizId },
+            data: {
+                status: "COMPLETED",
+                title: quizTitle,
+                currentNos: questionCounts.mcq + questionCounts.trueFalse,
+            },
+        });
     } catch (error) {
         console.error("Error generating questions:", error);
         await prisma.quiz.update({
@@ -115,12 +141,4 @@ Do not include any text outside of the JSON array.`;
         });
         return;
     }
-
-    await prisma.quiz.update({
-        where: { id: quizId },
-        data: {
-            status: "COMPLETED",
-            currentNos: questionCounts.mcq + questionCounts.trueFalse,
-        },
-    });
 }

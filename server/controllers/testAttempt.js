@@ -90,6 +90,8 @@ export const submitQuizAttempt = async (req, res) => {
             score,
             feedback
         });
+        // After saving to database
+        console.log(`Successfully saved submission for attempt ID: ${attemptId}`);
     } catch (err) {
         console.error("Error in submitQuizAttempt:", err);
         res.status(500).json({ error: "Failed to submit quiz and generate feedback" });
